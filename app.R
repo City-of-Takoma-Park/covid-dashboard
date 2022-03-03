@@ -14,8 +14,25 @@ library(lubridate)
 library(tpfuncts)
 library(plotly)
 library(glue)
+library(plotlywrappers)
 
 zip_fields <- readRDS("./data/zip_fields.rds")
+
+zip_vax <- read_rds("./data/zip_vax.rds")
+
+zip_vax_data <- zip_vax %>%
+    mutate(istp = case_when(grepl("20912", ZIPCODE1) ~ "20912",
+                            T ~ "Other zip codes")) %>%
+    arrange(desc(AtleastOneDose_PercentPop)) %>%
+    mutate(partialrank = round(percent_rank(AtleastOneDose_PercentPop) * 100, 0),
+           fullrank = round(percent_rank(FullyVaccinated_PercentPop) * 100, 0)) %>%
+    arrange(ZIPCODE1) %>%
+    mutate(ZIPCODE1 = factor(ZIPCODE1, .$ZIPCODE1, .$ZIPCODE1))
+
+zip_tp <- zip_vax_data %>%
+    filter(grepl("20912", ZIPCODE1))
+
+zip_tp_pop <- zip_tp$Population
 
 zip_long <- zip_fields %>%
     pivot_longer(cols = colnames(zip_fields)[-c(1:2)]) %>%
@@ -24,7 +41,14 @@ zip_long <- zip_fields %>%
            date_new = gsub("_", "-", date_new),
            date_new = as.Date(date_new, format = "%m-%d-%Y")) %>%
     arrange(date_new) %>%
-    mutate(case_change = value - lag(value)) %>%
+    mutate(case_change = value - lag(value),
+           case_change_7day = case_change + lag(case_change) + lag(case_change, 2) + lag(case_change, 3) + lag(case_change, 4) + lag(case_change, 5) + lag(case_change, 6),
+           case_change_7day = case_change_7day,
+           case_change_7day_norm = round(case_change_7day / zip_tp_pop * 100000, 2),
+           transmiss_level = case_when(case_change_7day_norm <= 10 ~ "Low",
+                                       case_change_7day_norm < 50 ~ "Moderate",
+                                       case_change_7day_norm < 100 ~ "Substantial",
+                                       case_change_7day_norm > 100 ~ "High")) %>%
     arrange(desc(date_new)) %>%
     mutate(thurs_reference = as.Date("06-01-2023", format = "%m-%d-%Y"),
            thurs_diff = floor(abs(date_new - thurs_reference) / 7)) %>%
@@ -100,7 +124,7 @@ zip_last60days <- zip_long %>%
     filter(date_new >= most_recent$date_new - 90) %>%
     arrange(date_new) %>%
     select(
-        date_new, value, case_change
+        date_new, value, case_change, case_change_7day, case_change_7day_norm, transmiss_level
     ) %>%
     mutate(pct_chng = pct_round((case_change - lag(case_change)), lag(case_change)),
            date_char = as.character(date_new) %>%
@@ -112,13 +136,62 @@ plot_last_60_days <- plot_ly(zip_last60days,
                              y = ~ case_change,
                              type = "scatter",
                              mode = "line+marker",
+                             showlegend = F,
                              text = ~ glue(
                              "Percent change since 
                              previous day: {pct_chng}%
                              Total cases since pandemic start: {value %>% commafy}")) %>%
     layout(title = "New cases in 20912 zip code in last 90 days",
            xaxis = list(title = "Date"),
-           yaxis = list(title = "New cases since previous day"))
+           yaxis = list(title = "New cases since previous day")) 
+
+
+plot_7daynorm_last_60_days <- plot_ly(zip_last60days, 
+                             x = ~ date_char,
+                             y = ~ case_change_7day_norm,
+                             type = "scatter",
+                             showlegend = F,
+                             mode = "line+marker",
+                             text = ~ glue(
+                                 "Transmission level: {transmiss_level}
+                             Total cases last 7 days: {case_change_7day %>% commafy}")) %>%
+    layout(title = "New cases in last 7-days per 100,000 residents",
+           xaxis = list(title = "Date"),
+           yaxis = list(title = "New cases in last 7-days per 100,000 residents"))
+    #        shapes = list(
+    #            list(
+    #                type = "line", 
+    #                y0 = 10, y1 = 10, x0 = 0 - 0.5, x1 = length(zip_last60days$date_char) - 
+    #                    0.5, xref = "x", line = list(dash = "dash")
+    #            ),
+    #            list(
+    #                type = "line", 
+    #                y0 = 50, y1 = 50, x0 = 0 - 0.5, x1 = length(zip_last60days$date_char) - 
+    #                    0.5, xref = "x", line = list(dash = "dash")
+    #            ),
+    #            list(
+    #                type = "line", 
+    #                y0 = 100, y1 = 100, x0 = 0 - 0.5, x1 = length(zip_last60days$date_char) - 
+    #                    0.5, xref = "x", line = list(dash = "dash")
+    #            )
+    #        )
+    #        ) %>%
+    # # add_annotations(text = "Low", 
+    # #                 x = length(zip_last60days$date_char) - length(zip_last60days$date_char)/2, yshift = 4, xshift = 3, y = 0, showarrow = F,
+    # #                 font = list(size = 9)) %>%
+    # add_annotations(text = "Moderate", 
+    #                 x = length(zip_last60days$date_char) - length(zip_last60days$date_char)/2, yshift = 4, xshift = 3, 
+    #                 y = 10, showarrow = F,
+    #                 font = list(size = 9)) %>%
+    # add_annotations(text = "Substantial", 
+    #                 x = length(zip_last60days$date_char) - length(zip_last60days$date_char)/2, yshift = 5, xshift = 3, 
+    #                 y = 50, showarrow = F,
+    #                 font = list(size = 9)) %>%
+    # add_annotations(text = "High", 
+    #                 x = length(zip_last60days$date_char) - length(zip_last60days$date_char)/2, yshift = 8, xshift = 3, 
+    #                 y = 100, showarrow = F,
+    #                 font = list(size = 9))
+    # 
 
 
 # last 7 days
@@ -128,20 +201,6 @@ zip_last7 <- zip_long %>%
     sum()
 
 # vax data
-zip_vax <- read_rds("./data/zip_vax.rds")
-
-zip_vax_data <- zip_vax %>%
-    mutate(istp = case_when(grepl("20912", ZIPCODE1) ~ "20912",
-                            T ~ "Other zip codes")) %>%
-    arrange(desc(AtleastOneDose_PercentPop)) %>%
-    mutate(partialrank = round(percent_rank(AtleastOneDose_PercentPop) * 100, 0),
-           fullrank = round(percent_rank(FullyVaccinated_PercentPop) * 100, 0)) %>%
-    arrange(ZIPCODE1) %>%
-    mutate(ZIPCODE1 = factor(ZIPCODE1, .$ZIPCODE1, .$ZIPCODE1))
-
-zip_tp <- zip_vax_data %>%
-    filter(grepl("20912", ZIPCODE1))
-
 tp_first_dose <- zip_tp$AtleastOneDose_PercentPop %>%
     round(., 2)
 
@@ -193,25 +252,43 @@ ui <- fluidPage(
     # Application title
     titlePanel("Takoma Park Zip-code Level Data Dashboard"),
     
-    tagList("Due to the effects of the Maryland Department of Public Health hack, the City of Takoma Park is currently unable to update our normal data-dashboard with city-level COVID case data. As a result, we have temporarily designed this dashboard to provide updated vaccination and case-data at the 20912 zip-code level using data from the state. The 20912 zip code covers most of Takoma Park, but also includes unincorporated areas outside of Takoma Park and does not include a small part of northwest Takoma Park. When we are able to receive city-level data again from the County, we will resume updating the normal dashboard at ", a("this link", href = "https://app.smartsheet.com/b/publish?EQBCT=42a594afc3ad4c59ba7b1ca9965b7837"), ". Data comes from the Marlyand Department of Public Health. If you have any questions or feedback, please contact Public Administation Specialist Dan Powers at ", a("danielp@takomaparkmd.gov", href = "mailto:danielp@takomaparkmd.gov"), "."),
+    tagList("Due to the effects of the Maryland Department of Public Health hack, the City of Takoma Park is currently unable to update our normal data-dashboard with city-level COVID case data. As a result, we have temporarily designed this dashboard to provide updated vaccination and case-data at the 20912 zip-code level using data from the state. The 20912 zip code covers most of Takoma Park, but also includes unincorporated areas outside of Takoma Park and does not include a small part of northwest Takoma Park. When we are able to receive city-level data again from the County, we will resume updating the normal dashboard at ", a("this link", href = "https://app.smartsheet.com/b/publish?EQBCT=42a594afc3ad4c59ba7b1ca9965b7837"), ". Data comes from the Marlyand Department of Public Health. The code used to generate this app can be found on the ", a("City's GithHub page", href = ""), ". If you have any questions or feedback, please contact Public Administation Specialist Dan Powers at ", a("danielp@takomaparkmd.gov", href = "mailto:danielp@takomaparkmd.gov"), "."),
     
     
     
     h3("Key metrics"),
     
-    strong(paste0("At least first-dose vaccination percentage in 20912 zip code: ", tp_first_dose, "%"), style = "font-size:16px;"),
+    strong(paste0("At-least first-dose vaccination rate in Takoma Park based on vaccination rates in Census tracts, as of January 24, 2022: 81%"), style = "font-size:16px;"),
     
     br(),
     
     br(),
     
-    strong(paste0("Fully-vaccinated percentage in 20912 zip code: ", tp_second_dose, "%"), style = "font-size:16px;"),
+    strong(paste0("At least first-dose vaccination rate in 20912 zip code: ", tp_first_dose, "%"), style = "font-size:16px;"),
     
     br(),
     
     br(),
     
-    strong(paste0("New cases in last 7 days: ", zip_last7)),
+    strong(paste0("Fully-vaccinated rate in 20912 zip code: ", tp_second_dose, "%"), style = "font-size:16px;"),
+    
+    br(),
+    
+    br(),
+    
+    strong(paste0("New cases in last 7 days: ", zip_last7), style = "font-size:16px;"),
+    
+    br(),
+    
+    br(),
+    
+    strong(paste0("New cases per 100,000 residents in last 7 days: ", most_recent$case_change_7day_norm %>% commafy), style = "font-size:16px;"),
+    
+    br(),
+    
+    br(),
+    
+    strong(paste0("Community transmission levels in 20912 zip code based on CDC guidance: ", most_recent$transmiss_level), style = "font-size:16px;"),
     
     br(),
     
@@ -223,7 +300,9 @@ ui <- fluidPage(
                  
                  br(),
                  
-                 plot_last_60_days,
+                 subplot(plot_last_60_days %>% subplot_title("New daily cases"),  
+                         plot_7daynorm_last_60_days %>% subplot_title("New cases last 7-days\nper 100k residents"), nrows = 2, shareX = T) %>%
+                     layout(title = "New cases in 20912 zip code in last 90 days"),
                  
                  br(),
                  br(),
