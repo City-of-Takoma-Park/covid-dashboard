@@ -5,10 +5,12 @@
 # Find out more about building applications with Shiny here:
 #
 #    http://shiny.rstudio.com/
-#
+
+
+# rsconnect::deployApp(appName = "covid_dashboard", account = "takomapark") 
 
 library(shiny)
-library(shinythemes)
+library(bslib)
 library(tidyverse)
 library(lubridate)
 library(tpfuncts)
@@ -87,7 +89,7 @@ zip_long_last180days <- zip_long %>%
     mutate(pct_chng = round((week_new - lag(week_new)) * 100 / lag(week_new), 1),
            week_range = factor(week_range, .$week_range, .$week_range))
 
-plot_weekchange <- plot_ly(zip_long_last180days,
+plot_weekchange <- plotly::plot_ly(zip_long_last180days,
                            x = ~ week_range,
                            y = ~ week_new,
                            type = "scatter",
@@ -107,7 +109,7 @@ zip_long_start2021 <- zip_long %>%
     mutate(pct_chng = pct_round((month_cases - lag(month_cases)), lag(month_cases)),
            month_data = factor(month_data, .$month_data, .$month_data))
 
-plot_monthchange <- plot_ly(zip_long_start2021,
+plot_monthchange <- plotly::plot_ly(zip_long_start2021,
                             x = ~ month_data,
                             y = ~ month_cases,
                             text = ~ glue(
@@ -131,7 +133,7 @@ zip_last60days <- zip_long %>%
                gsub("(2021-)|(2022-)", "", .)) %>%
     mutate(date_char = factor(date_char, .$date_char, .$date_char))
 
-plot_last_60_days <- plot_ly(zip_last60days, 
+plot_last_60_days <- plotly::plot_ly(zip_last60days, 
                              x = ~ date_char,
                              y = ~ case_change,
                              type = "scatter",
@@ -146,7 +148,7 @@ plot_last_60_days <- plot_ly(zip_last60days,
            yaxis = list(title = "New cases since previous day")) 
 
 
-plot_7daynorm_last_60_days <- plot_ly(zip_last60days, 
+plot_7daynorm_last_60_days <- plotly::plot_ly(zip_last60days, 
                              x = ~ date_char,
                              y = ~ case_change_7day_norm,
                              type = "scatter",
@@ -207,7 +209,7 @@ tp_first_dose <- zip_tp$AtleastOneDose_PercentPop %>%
 tp_second_dose <- zip_tp$FullyVaccinated_PercentPop %>%
     round(., 2)
 
-plot_partial_vax <- plot_ly(
+plot_partial_vax <- plotly::plot_ly(
     zip_vax_data,
     x = ~ ZIPCODE1,
     y = ~ round(AtleastOneDose_PercentPop, 2),
@@ -226,7 +228,7 @@ plot_partial_vax <- plot_ly(
            legend = list(font = list(size = 10)),
            title = "At-least first dose percent-vaccinated by zip code")
 
-plot_full_vax <- plot_ly(
+plot_full_vax <- plotly::plot_ly(
     zip_vax_data,
     x = ~ ZIPCODE1,
     y = ~ round(FullyVaccinated_PercentPop, 2),
@@ -245,18 +247,142 @@ plot_full_vax <- plot_ly(
            legend = list(font = list(size = 10)),
            title = "Fully-vaccinated percent by zip code")
 
+
+# read in and analyze community level data
+comm_level <- readRDS("./data/community_level.rds")
+
+comm_level_point_time <- comm_level %>%
+  group_by(county) %>%
+  arrange(desc(date_updated)) %>%
+  slice_head(n = 1)
+
+comm_level_mc <- comm_level %>%
+  filter(grepl("Montgomery", county))
+
+curr_level_mc <- comm_level_point_time %>%
+  filter(county == "Montgomery County")
+
+curr_level_mc_level <- curr_level_mc %>%
+  pull(covid_19_community_level)
+
+curr_level_cases <- curr_level_mc %>%
+  pull(covid_cases_per_100k)
+
+curr_level_mc_update <- curr_level_mc %>%
+  pull(date_format)
+
+plot_commlevels_mc <- function(vareval, varstring, subtitle, basechng){
+  
+  basepct <- paste0(basechng, "_pct")
+  
+    returnplot <- plot_ly(comm_level_mc %>%
+            arrange(date_updated),
+         x = ~ date_updated,
+         y = vareval,
+         text = ~ glue(paste0("Change since last week: {", basechng, " %>% commafy}
+                         Percent change since last week: {", basepct, " %>% commafy}%")),
+         showlegend = F,
+         type = "scatter",
+         mode = "line+marker") 
+  
+  
+  maxval <- case_when(varstring == "covid_cases_per_100k" ~ 250,
+                      varstring == "covid_hospital_admissions_per_100k" ~ 25,
+                      varstring == "covid_inpatient_bed_utilization" ~ 20)
+  
+  
+  
+  if (max(comm_level_mc[[varstring]]) < maxval){
+    returnplot <- returnplot %>%
+      layout(xaxis = list(title = "Date"),
+             yaxis = list(title = "",
+                          tickvals = seq(0, maxval, maxval / 5),
+                          range = c(0, maxval)),
+             title = "")
+  }
+  
+  else {
+    returnplot <- returnplot %>%
+      layout(xaxis = list(title = "Date"),
+             yaxis = list(title = ""),
+             title = "")
+  }
+    
+  returnplot %>%
+    subplot_title(subtitle)
+
+}
+
+lines_approp <- function(baseplot, varstring){
+  
+  # browser()
+  
+  if (varstring == "covid_cases_per_100k"){
+    returnplot <- baseplot %>%
+      dotted_line(df = comm_level_mc, x_col = "date_updated", line_val = 200, gluetext = "", .showarrow = F)
+  }
+  
+  else{
+    if (curr_level_cases < 200){
+      
+      var_med <- case_when(varstring == "covid_hospital_admissions_per_100k" ~ 10,
+                           varstring == "covid_inpatient_bed_utilization" ~ 10)
+      
+      var_high <- case_when(varstring == "covid_hospital_admissions_per_100k" ~ 20,
+                           varstring == "covid_inpatient_bed_utilization" ~ 15)
+      
+
+      returnplot <- baseplot %>%
+        multi_line(df = comm_level_mc, x_col = "date_updated", yvec = c(var_med, var_high), c("Medium", "High"))
+    }
+    
+    if (curr_level_cases >= 200){
+      var_high <- case_when(varstring == "covid_hospital_admissions_per_100k" ~ 10,
+                            varstring == "covid_inpatient_bed_utilization" ~ 10)
+      
+      returnplot <- baseplot %>%
+        dotted_line(df = comm_level_mc, x_col = "date_updated", line_val = var_high, gluetext = "High", .showarrow = F)
+      
+    }
+    
+  }
+  
+  return(returnplot)
+  
+}
+
+plot_lines_commlevelsmc <- function(vareval, varstring, subtitle, basechng){
+  plot_commlevels_mc(vareval = vareval, varstring = varstring, subtitle = subtitle, basechng = basechng) %>%
+    lines_approp(varstring = varstring)
+}
+
+plot_mc_covid100k <- plot_lines_commlevelsmc(~ covid_cases_per_100k, "covid_cases_per_100k", "COVID cases\nper 100k\n(elevated risk at 200)", "chng_covid")
+
+plot_mc_inpatient <- plot_lines_commlevelsmc(~ covid_inpatient_bed_utilization, "covid_inpatient_bed_utilization", "Percent of beds\noccupied by\nCOVID patients", "chng_inpatient") 
+
+plot_mc_admits <- plot_lines_commlevelsmc(~ covid_hospital_admissions_per_100k,"covid_hospital_admissions_per_100k", "COVID hospital\nadmissions per\n100k", "chng_hospadmit")
+
+sub_commlevel <- plotly::subplot(plot_mc_covid100k,
+                         plot_mc_inpatient,
+                         plot_mc_admits, shareX = T, nrows = 1) %>%
+  layout(title = glue::glue("Montgomery County Community Level: {curr_level_mc_level}"))
+
 # Define UI for application that draws a histogram
 ui <- fluidPage(
-    theme = shinytheme("flatly"),
+    theme = bs_theme(version = 3, bootswatch = "flatly"),
     
     # Application title
     titlePanel("Takoma Park Zip-code Level Data Dashboard"),
     
     tagList("Due to the effects of the Maryland Department of Public Health hack, the City of Takoma Park is currently unable to update our normal data-dashboard with city-level COVID case data. As a result, we have temporarily designed this dashboard to provide updated vaccination and case-data at the 20912 zip-code level using data from the state. The 20912 zip code covers most of Takoma Park, but also includes unincorporated areas outside of Takoma Park and does not include a small part of northwest Takoma Park. When we are able to receive city-level data again from the County, we will resume updating the normal dashboard at ", a("this link", href = "https://app.smartsheet.com/b/publish?EQBCT=42a594afc3ad4c59ba7b1ca9965b7837"), ". Data comes from the Marlyand Department of Public Health. The code used to generate this app can be found on the ", a("City's GithHub page", href = ""), ". If you have any questions or feedback, please contact Public Administation Specialist Dan Powers at ", a("danielp@takomaparkmd.gov", href = "mailto:danielp@takomaparkmd.gov"), "."),
     
-    
-    
     h3("Key metrics"),
+    
+    strong(paste0("Montgomery County "), tags$a(href = "https://www.cdc.gov/coronavirus/2019-ncov/science/community-levels.html", "Community Level"), " as of ", curr_level_mc_update, ":", curr_level_mc_level, style = "font-size:16px;"),
+    
+    br(),
+    
+    br(),
     
     strong(paste0("At-least first-dose vaccination rate in Takoma Park based on vaccination rates in Census tracts, as of January 24, 2022: 81%"), style = "font-size:16px;"),
     
@@ -296,7 +422,19 @@ ui <- fluidPage(
     
     tabsetPanel(
         selected = "covid",
-        tabPanel(title = "COVID cases in 20912 zip code",
+        tabPanel(title = "COVID cases",
+                 
+                 br(),
+                 
+                 "Montgomery County's Community Level is based on three metrics: COVID-19 cases, hospital admissions due to COVID-19, and the percent of staffed inpatient beds occupied by COVID-19 patients.",
+                 
+                 br(),
+                 
+                 br(),
+                 
+                 sub_commlevel,
+                 
+                 br(),
                  
                  br(),
                  
@@ -328,6 +466,14 @@ ui <- fluidPage(
                  plot_full_vax,
                  value = "vax"
         )
+        
+        # tabPanel("County community-levels",
+        #          
+        #          br(),
+        #          
+        #          
+        #          
+        # )
     )
 )
 
